@@ -2,6 +2,7 @@ package serve
 
 import (
 	"fmt"
+	"httpfs/request"
 	"io"
 	"log"
 	"net"
@@ -10,7 +11,7 @@ import (
 
 func Serve(port string) {
 
-	listener, err := net.Listen("tcp", port)
+	listener, err := net.Listen("tcp4", ":"+port)
 	if err != nil {
 		log.Printf("failed to listen on " + port + ".")
 	}
@@ -39,15 +40,14 @@ func handleConnection(conn net.Conn) {
 			log.Print("Error closing the connection with the client.")
 		}
 	}(conn)
-	log.Println(fmt.Printf("new connection from %v\n", conn.RemoteAddr()))
-
+	log.Println(fmt.Printf("new connection from " + conn.RemoteAddr().String() + ". \n"))
 	//we can use io.Copy(conn, conn) but this function demonstrates read&write methods
 	buf := make([]byte, 1024)
 	for {
 		n, re := conn.Read(buf)
 		if n > 0 {
 			if _, we := conn.Write(buf[:n]); we != nil {
-				fmt.Fprintf(os.Stderr, "write error %v\n", we)
+				fmt.Println("write error: ", we)
 				break
 			}
 		}
@@ -55,8 +55,9 @@ func handleConnection(conn net.Conn) {
 			break
 		}
 		if re != nil {
-			fmt.Fprintf(os.Stderr, "read error %v\n", re)
+			fmt.Println("read error: ", re)
 			break
 		}
 	}
+	request.Handle(request.Parse(conn))
 }

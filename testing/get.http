@@ -1,0 +1,9 @@
+POST http://localhost:80/foo
+Content-Type: application/json
+
+{"content":  "Hello World!"}
+
+###
+GET http://localhost:8080/
+Accept: application/json
+###
