@@ -2,14 +2,18 @@ package serve
 
 import (
 	"fmt"
+	"httpfs/cli"
 	"httpfs/request"
 	"io"
 	"log"
 	"net"
 	"os"
+	"strconv"
 )
 
-func Serve(port string) {
+func Serve(opts *cli.Options) {
+
+	port := strconv.Itoa(opts.Port)
 
 	listener, err := net.Listen("tcp4", ":"+port)
 	if err != nil {
@@ -29,11 +33,11 @@ func Serve(port string) {
 			fmt.Fprintf(os.Stderr, "error occured during accept connection %v\n", err)
 			continue
 		}
-		go handleConnection(conn)
+		go handleConnection(conn, opts)
 	}
 }
 
-func handleConnection(conn net.Conn) {
+func handleConnection(conn net.Conn, opts *cli.Options) {
 	defer func(conn net.Conn) {
 		err := conn.Close()
 		if err != nil {
@@ -58,6 +62,7 @@ func handleConnection(conn net.Conn) {
 			fmt.Println("read error: ", re)
 			break
 		}
+		parsed := request.Parse(string(buf))
+		request.Handle(parsed, opts)
 	}
-	request.Handle(request.Parse(conn))
 }

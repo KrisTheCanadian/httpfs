@@ -1,4 +1,4 @@
-POST http://localhost:80/foo
+POST http://localhost:8080/foo
 Content-Type: application/json
 
 {"content":  "Hello World!"}

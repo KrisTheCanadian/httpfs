@@ -1,9 +1,9 @@
 package request
 
 import (
-	"bufio"
-	"net"
+	"httpfs/cli"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -17,19 +17,18 @@ type Request struct {
 	Body     string
 }
 
-func Parse(conn net.Conn) *Request {
+func Parse(raw string) *Request {
 	req := Request{}
-	scnr := bufio.NewScanner(conn)
+	req.Headers = make(map[string]string, 10)
 
-	if !scnr.Scan() {
+	if raw == "" {
 		// TODO Handle No Status Line
 		panic("No status line!")
 	}
 
-	line := scnr.Text()
-	split := strings.Split(line, " ")
+	lines := strings.Split(raw, "\r\n")
+	split := strings.Split(lines[0], " ")
 
-	// TODO Validate Data
 	req.Method = split[0]
 	req.Url = split[1]
 	split2 := strings.Split(split[2], "/")
@@ -42,30 +41,30 @@ func Parse(conn net.Conn) *Request {
 	}
 	req.Version = version
 
-	// Read Headers
-	for scnr.Scan() {
-		line := scnr.Text()
-
-		if line == "" {
+	lineCount := 1
+	// Reading headers
+	for i := lineCount; i < len(lines); i++ {
+		lineCount++
+		if lines[i] == "" {
 			break
 		}
 
-		index := strings.Index(line, ":")
-		key := line[:index]
-		value := line[index+1:]
+		index := strings.Index(lines[i], ":")
+		key := lines[i][:index]
+		value := lines[i][index+1:]
 		req.Headers[key] = value
 	}
 
 	// Read Body
-	for scnr.Scan() {
-		line := scnr.Text()
+	for i := lineCount; i < len(lines); i++ {
+		line := lines[i]
 		req.Body = req.Body + line + "\n"
 	}
 
 	return &req
 }
 
-func Handle(req *Request) {
+func Handle(req *Request, opts *cli.Options) {
 	if req == nil {
 		panic("nullptr!")
 	}
@@ -74,9 +73,9 @@ func Handle(req *Request) {
 
 	switch req.Method {
 	case http.MethodGet:
-		handleGet(req)
+		handleGet(req, opts)
 	case http.MethodPost:
-		handlePost(req)
+		handlePost(req, opts)
 	default:
 		// TODO HTTP Error Message
 		panic("Http method cannot be handled")
@@ -101,10 +100,21 @@ func validateRequest(req *Request) {
 	}
 }
 
-func handleGet(req *Request) {
+func handleGet(req *Request, opts *cli.Options) {
+	// Validate the URL
+	path := filepath.Clean(opts.Path + req.Url)
+	dirRoot := strings.Split(opts.Path, "/")[0]
+	root := strings.Split(path, "/")[0]
+	if dirRoot != root {
+		panic("Access Violation")
+	}
+	// Allow to read to file
+	// send response with content + status
 
 }
 
-func handlePost(req *Request) {
-
+func handlePost(req *Request, opts *cli.Options) {
+	// Validate the URL (to the directory of the project)
+	// Allow to write to file
+	// send response with content + status
 }

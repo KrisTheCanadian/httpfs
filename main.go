@@ -5,7 +5,6 @@ import (
 	"httpfs/serve"
 	"io"
 	"log"
-	"strconv"
 )
 
 func main() {
@@ -17,5 +16,5 @@ func main() {
 	log.Println(opts)
 	log.Println("Verbose Enabled.")
 
-	serve.Serve(strconv.Itoa(opts.Port))
+	serve.Serve(opts)
 }
