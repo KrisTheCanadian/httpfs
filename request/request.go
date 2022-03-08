@@ -1,8 +1,12 @@
 package request
 
 import (
+	"bufio"
+	"fmt"
 	"httpfs/cli"
+	"log"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -101,20 +105,57 @@ func validateRequest(req *Request) {
 }
 
 func handleGet(req *Request, opts *cli.Options) {
-	// Validate the URL
-	path := filepath.Clean(opts.Path + req.Url)
-	dirRoot := strings.Split(opts.Path, "/")[0]
-	root := strings.Split(path, "/")[0]
-	if dirRoot != root {
-		panic("Access Violation")
-	}
+	read(req, opts)
 	// Allow to read to file
 	// send response with content + status
-
 }
 
 func handlePost(req *Request, opts *cli.Options) {
 	// Validate the URL (to the directory of the project)
 	// Allow to write to file
 	// send response with content + status
+}
+
+func write(req *Request, opts *cli.Options) {
+	validatePath(req, opts)
+}
+
+func read(req *Request, opts *cli.Options) {
+	path := validatePath(req, opts)
+	fmt.Println("Opening a file ")
+	file, err := os.OpenFile(path, os.O_RDONLY, 0666)
+	if err != nil {
+		panic("file reading error")
+	}
+	defer func(file *os.File) {
+		err := file.Close()
+		if err != nil {
+			panic("Error closing file")
+		}
+	}(file)
+
+	scnr := bufio.NewScanner(file)
+	for scnr.Scan() {
+		// do something with a line
+		fmt.Printf("line: %s\n", scnr.Text())
+	}
+
+	if err := scnr.Err(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func validatePath(req *Request, opts *cli.Options) string {
+	path := filepath.Clean(opts.Path + req.Url)
+	dirRootTree := strings.Split(opts.Path, "/")
+	reqRootTree := strings.Split(path, "/")
+	if len(reqRootTree) < len(dirRootTree) {
+		panic("access violation")
+	}
+	for i, node := range dirRootTree {
+		if node != reqRootTree[i] {
+			panic("access violation")
+		}
+	}
+	return path
 }

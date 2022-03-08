@@ -4,6 +4,6 @@ Content-Type: application/json
 {"content":  "Hello World!"}
 
 ###
-GET http://localhost:8080/
+GET http://localhost:8080/test.txt
 Accept: application/json
 ###
