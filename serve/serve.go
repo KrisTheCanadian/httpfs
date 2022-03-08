@@ -1,12 +1,15 @@
 package serve
 
 import (
+	"encoding/json"
 	"fmt"
 	"httpfs/cli"
 	"httpfs/request"
+	"httpfs/response"
 	"io"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"strconv"
 )
@@ -62,7 +65,13 @@ func handleConnection(conn net.Conn, opts *cli.Options) {
 			fmt.Println("read error: ", re)
 			break
 		}
-		parsed := request.Parse(string(buf))
-		request.Handle(parsed, opts)
+		req := request.Parse(string(buf))
+		data := request.Handle(req, opts)
+		jsonData, err := json.Marshal(data)
+		if err != nil {
+			panic("Data cannot be converted to json. Internal Error")
+		}
+		headers := response.NewResponseHeaders()
+		response.SendNewResponse(http.StatusOK, req.Protocol, req.Version, headers, string(jsonData))
 	}
 }

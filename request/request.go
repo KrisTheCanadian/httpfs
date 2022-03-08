@@ -13,6 +13,11 @@ import (
 	"strings"
 )
 
+type FileData struct {
+	FileName string
+	Content  string
+}
+
 type Request struct {
 	Method   string
 	Url      string
@@ -69,23 +74,22 @@ func Parse(raw string) *Request {
 	return &req
 }
 
-func Handle(req *Request, opts *cli.Options) string {
+func Handle(req *Request, opts *cli.Options) *FileData {
 	if req == nil {
 		panic("nullptr!")
 	}
-	data := ""
 	validateRequest(req)
-
+	data := FileData{}
 	switch req.Method {
 	case http.MethodGet:
-		data = read(req, opts)
+		data = *read(req, opts)
 	case http.MethodPost:
-		data = write(req, opts)
+		data = *write(req, opts)
 	default:
 		// TODO HTTP Error Message
 		panic("Http method cannot be handled")
 	}
-	return data
+	return &data
 }
 
 func validateRequest(req *Request) {
@@ -93,24 +97,23 @@ func validateRequest(req *Request) {
 		// TODO Handle missing method HTTP ERROR
 		panic("Method is missing")
 	}
-
 	if req.Protocol != "HTTP" {
 		// TODO HTTP ERROR
 		panic("Protocol is unsupported")
 	}
-
 	if req.Version != 1.0 && req.Version != 1.1 {
 		// TODO Handle response
 		panic("HTTP Version is not supported.")
 	}
 }
 
-func write(req *Request, opts *cli.Options) string {
+// TODO
+func write(req *Request, opts *cli.Options) *FileData {
 	validatePath(req, opts)
-	return ""
+	return nil
 }
 
-func read(req *Request, opts *cli.Options) string {
+func read(req *Request, opts *cli.Options) *FileData {
 	path := validatePath(req, opts)
 	fmt.Println("Opening a file ")
 	file, err := os.OpenFile(path, os.O_RDONLY, 0666)
@@ -123,8 +126,10 @@ func read(req *Request, opts *cli.Options) string {
 			panic("Error closing file")
 		}
 	}(file)
+
 	var buffer bytes.Buffer
 	scnr := bufio.NewScanner(file)
+
 	for scnr.Scan() {
 		buffer.WriteString(scnr.Text() + "\n")
 	}
@@ -133,7 +138,9 @@ func read(req *Request, opts *cli.Options) string {
 		log.Fatal(err)
 	}
 
-	return buffer.String()
+	fileName := strings.Split(path, "/")[len(req.Url)-1]
+	FileData := FileData{FileName: fileName, Content: buffer.String()}
+	return &FileData
 }
 
 func validatePath(req *Request, opts *cli.Options) string {
