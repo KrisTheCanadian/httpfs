@@ -2,6 +2,7 @@ package request
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"httpfs/cli"
 	"log"
@@ -68,23 +69,23 @@ func Parse(raw string) *Request {
 	return &req
 }
 
-func Handle(req *Request, opts *cli.Options) {
+func Handle(req *Request, opts *cli.Options) string {
 	if req == nil {
 		panic("nullptr!")
 	}
-
+	data := ""
 	validateRequest(req)
 
 	switch req.Method {
 	case http.MethodGet:
-		handleGet(req, opts)
+		data = read(req, opts)
 	case http.MethodPost:
-		handlePost(req, opts)
+		data = write(req, opts)
 	default:
 		// TODO HTTP Error Message
 		panic("Http method cannot be handled")
 	}
-
+	return data
 }
 
 func validateRequest(req *Request) {
@@ -104,23 +105,12 @@ func validateRequest(req *Request) {
 	}
 }
 
-func handleGet(req *Request, opts *cli.Options) {
-	read(req, opts)
-	// Allow to read to file
-	// send response with content + status
-}
-
-func handlePost(req *Request, opts *cli.Options) {
-	// Validate the URL (to the directory of the project)
-	// Allow to write to file
-	// send response with content + status
-}
-
-func write(req *Request, opts *cli.Options) {
+func write(req *Request, opts *cli.Options) string {
 	validatePath(req, opts)
+	return ""
 }
 
-func read(req *Request, opts *cli.Options) {
+func read(req *Request, opts *cli.Options) string {
 	path := validatePath(req, opts)
 	fmt.Println("Opening a file ")
 	file, err := os.OpenFile(path, os.O_RDONLY, 0666)
@@ -133,16 +123,17 @@ func read(req *Request, opts *cli.Options) {
 			panic("Error closing file")
 		}
 	}(file)
-
+	var buffer bytes.Buffer
 	scnr := bufio.NewScanner(file)
 	for scnr.Scan() {
-		// do something with a line
-		fmt.Printf("line: %s\n", scnr.Text())
+		buffer.WriteString(scnr.Text() + "\n")
 	}
 
 	if err := scnr.Err(); err != nil {
 		log.Fatal(err)
 	}
+
+	return buffer.String()
 }
 
 func validatePath(req *Request, opts *cli.Options) string {
