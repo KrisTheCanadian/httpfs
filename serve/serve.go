@@ -55,11 +55,6 @@ func handleConnection(conn net.Conn, opts *cli.Options) {
 			fmt.Println("read error: ", re)
 			break
 		}
-		// DEBUG
-		_, err := conn.Write([]byte("Message received."))
-		if err != nil {
-			fmt.Println(err)
-		}
 
 		req := request.Parse(string(buf))
 		data := request.Handle(req, opts)
