@@ -6,7 +6,6 @@ import (
 	"httpfs/cli"
 	"httpfs/request"
 	"httpfs/response"
-	"io"
 	"log"
 	"net"
 	"net/http"
@@ -51,20 +50,17 @@ func handleConnection(conn net.Conn, opts *cli.Options) {
 	//we can use io.Copy(conn, conn) but this function demonstrates read&write methods
 	buf := make([]byte, 1024)
 	for {
-		n, re := conn.Read(buf)
-		if n > 0 {
-			if _, we := conn.Write(buf[:n]); we != nil {
-				fmt.Println("write error: ", we)
-				break
-			}
-		}
-		if re == io.EOF {
-			break
-		}
+		_, re := conn.Read(buf)
 		if re != nil {
 			fmt.Println("read error: ", re)
 			break
 		}
+		// DEBUG
+		_, err := conn.Write([]byte("Message received."))
+		if err != nil {
+			fmt.Println(err)
+		}
+
 		req := request.Parse(string(buf))
 		data := request.Handle(req, opts)
 		jsonData, err := json.Marshal(data)
@@ -72,6 +68,10 @@ func handleConnection(conn net.Conn, opts *cli.Options) {
 			panic("Data cannot be converted to json. Internal Error")
 		}
 		headers := response.NewResponseHeaders()
-		response.SendNewResponse(http.StatusOK, req.Protocol, req.Version, headers, string(jsonData))
+		responseString := response.SendNewResponse(http.StatusOK, req.Protocol, req.Version, headers, string(jsonData))
+		_, err = conn.Write([]byte(responseString))
+		if err != nil {
+			panic("Cannot send response. Error Occurred")
+		}
 	}
 }
