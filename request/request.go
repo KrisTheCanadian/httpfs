@@ -3,12 +3,13 @@ package request
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
 	"httpfs/cli"
-	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -67,22 +68,22 @@ func Parse(raw string) *Request {
 	return &req
 }
 
-func Handle(req *Request, opts *cli.Options) *FileData {
+func Handle(req *Request, opts *cli.Options) (*FileData, error) {
+	var err error
 	if req == nil {
 		panic("nullptr!")
 	}
 	validateRequest(req)
-	data := FileData{}
+	var data *FileData
 	switch req.Method {
 	case http.MethodGet:
-		data = *read(req, opts)
+		data, err = read(req, opts)
 	case http.MethodPost:
-		data = *write(req, opts)
+		data, err = write(req, opts)
 	default:
-		// TODO HTTP Error Message
-		panic("Http method cannot be handled")
+		err = errors.New(strconv.Itoa(http.StatusMethodNotAllowed))
 	}
-	return &data
+	return data, err
 }
 
 func validateRequest(req *Request) {
@@ -101,23 +102,27 @@ func validateRequest(req *Request) {
 }
 
 // TODO
-func write(req *Request, opts *cli.Options) *FileData {
-	validatePath(req, opts)
-	return nil
+func write(req *Request, opts *cli.Options) (*FileData, error) {
+	_, err := validatePath(req, opts)
+	if err != nil {
+		return nil, err
+	}
+	return nil, nil
 }
 
-func read(req *Request, opts *cli.Options) *FileData {
-	path := validatePath(req, opts)
-	fmt.Println("Opening a file ")
+func read(req *Request, opts *cli.Options) (*FileData, error) {
+	path, err := validatePath(req, opts)
+	if err != nil {
+		return nil, err
+	}
+	fmt.Println("Opening a file " + path)
 	file, err := os.OpenFile(path, os.O_RDONLY, 0666)
 	if err != nil {
-		panic("file reading error")
+		return nil, errors.New(strconv.Itoa(http.StatusNotFound))
 	}
 	defer func(file *os.File) {
-		err := file.Close()
-		if err != nil {
-			panic("Error closing file")
-		}
+		err = file.Close()
+		err = errors.New(strconv.Itoa(http.StatusNotFound))
 	}(file)
 
 	var buffer bytes.Buffer
@@ -128,25 +133,28 @@ func read(req *Request, opts *cli.Options) *FileData {
 	}
 
 	if err := scnr.Err(); err != nil {
-		log.Fatal(err)
+		// TODO List Directory Files
 	}
 	split := strings.Split(path, "/")
 	fileName := split[len(split)-1]
 	FileData := FileData{FileName: fileName, Content: buffer.String()}
-	return &FileData
+	return &FileData, err
 }
 
-func validatePath(req *Request, opts *cli.Options) string {
+func validatePath(req *Request, opts *cli.Options) (string, error) {
 	path := filepath.Clean(opts.Path + req.Url)
 	dirRootTree := strings.Split(opts.Path, "/")
 	reqRootTree := strings.Split(path, "/")
+	var err error
 	if len(reqRootTree) < len(dirRootTree) {
-		panic("access violation")
+		err = errors.New(strconv.Itoa(http.StatusForbidden))
+		return "", err
 	}
 	for i, node := range dirRootTree {
 		if node != reqRootTree[i] {
-			panic("access violation")
+			err = errors.New(strconv.Itoa(http.StatusForbidden))
+			return "", err
 		}
 	}
-	return path
+	return path, err
 }

@@ -57,16 +57,31 @@ func handleConnection(conn net.Conn, opts *cli.Options) {
 		}
 
 		req := request.Parse(string(buf))
-		data := request.Handle(req, opts)
+		data, err := request.Handle(req, opts)
+		if err != nil {
+			httpError, _ := strconv.Atoi(err.Error())
+			responseString := response.SendHTTPError(httpError, req.Protocol, req.Version, req.Body)
+			_, err = conn.Write([]byte(responseString))
+			break
+		}
+
 		jsonData, err := json.Marshal(data)
 		if err != nil {
-			panic("Data cannot be converted to json. Internal Error")
+			responseString := response.SendHTTPError(http.StatusInternalServerError, req.Protocol, req.Version, req.Body)
+			_, err = conn.Write([]byte(responseString))
+			break
 		}
-		headers := response.NewResponseHeaders()
+
+		headers, stayConnected := response.NewResponseHeaders(req)
 		responseString := response.SendNewResponse(http.StatusOK, req.Protocol, req.Version, headers, string(jsonData))
 		_, err = conn.Write([]byte(responseString))
 		if err != nil {
-			panic("Cannot send response. Error Occurred")
+			responseString := response.SendHTTPError(http.StatusInternalServerError, req.Protocol, req.Version, req.Body)
+			_, err = conn.Write([]byte(responseString))
+			break
+		}
+		if !stayConnected {
+			break
 		}
 	}
 }
