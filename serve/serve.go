@@ -64,7 +64,7 @@ func handleConnection(conn net.Conn, opts *cli.Options) {
 			_, err = conn.Write([]byte(responseString))
 			break
 		}
-
+		// TODO BEAUTIFY THE JSON
 		jsonData, err := json.Marshal(data)
 		if err != nil {
 			responseString := response.SendHTTPError(http.StatusInternalServerError, req.Protocol, req.Version, req.Body)

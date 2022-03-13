@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"httpfs/cli"
+	"io/ioutil"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -13,9 +15,10 @@ import (
 	"strings"
 )
 
-type FileData struct {
-	FileName string
-	Content  string
+type Data struct {
+	Name        string
+	Content     string
+	IsDirectory bool
 }
 
 type Request struct {
@@ -68,13 +71,13 @@ func Parse(raw string) *Request {
 	return &req
 }
 
-func Handle(req *Request, opts *cli.Options) (*FileData, error) {
+func Handle(req *Request, opts *cli.Options) (*Data, error) {
 	var err error
 	if req == nil {
 		panic("nullptr!")
 	}
 	validateRequest(req)
-	var data *FileData
+	var data *Data
 	switch req.Method {
 	case http.MethodGet:
 		data, err = read(req, opts)
@@ -102,7 +105,7 @@ func validateRequest(req *Request) {
 }
 
 // TODO
-func write(req *Request, opts *cli.Options) (*FileData, error) {
+func write(req *Request, opts *cli.Options) (*Data, error) {
 	_, err := validatePath(req, opts)
 	if err != nil {
 		return nil, err
@@ -110,13 +113,32 @@ func write(req *Request, opts *cli.Options) (*FileData, error) {
 	return nil, nil
 }
 
-func read(req *Request, opts *cli.Options) (*FileData, error) {
+func read(req *Request, opts *cli.Options) (*Data, error) {
 	path, err := validatePath(req, opts)
 	if err != nil {
 		return nil, err
 	}
 	fmt.Println("Opening a file " + path)
 	file, err := os.OpenFile(path, os.O_RDONLY, 0666)
+	fileInfo, err := file.Stat()
+
+	if fileInfo.IsDir() {
+		fileSB := strings.Builder{}
+		files, err := ioutil.ReadDir(path)
+		if err != nil {
+			log.Fatal(err)
+		}
+		for _, file := range files {
+			if file.IsDir() {
+				fileSB.WriteString(file.Name() + "/" + "\n")
+			} else {
+				fileSB.WriteString(file.Name() + "\n")
+			}
+		}
+		d := Data{Name: path, Content: fileSB.String(), IsDirectory: true}
+		return &d, err
+	}
+
 	if err != nil {
 		return nil, errors.New(strconv.Itoa(http.StatusNotFound))
 	}
@@ -133,11 +155,12 @@ func read(req *Request, opts *cli.Options) (*FileData, error) {
 	}
 
 	if err := scnr.Err(); err != nil {
-		// TODO List Directory Files
+		// TODO Handle Error
+		panic("cannot read file.")
 	}
 	split := strings.Split(path, "/")
 	fileName := split[len(split)-1]
-	FileData := FileData{FileName: fileName, Content: buffer.String()}
+	FileData := Data{Name: fileName, Content: buffer.String(), IsDirectory: false}
 	return &FileData, err
 }
 
