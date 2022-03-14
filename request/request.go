@@ -196,21 +196,20 @@ func read(req *Request, opts *cli.Options) (*Data, error) {
 	}
 
 	if fileInfo.IsDir() {
-		fileSB := strings.Builder{}
 		files, err := ioutil.ReadDir(path)
-		d := Data{Name: path}
+
+		d := Data{Name: req.Url}
 
 		if err != nil {
 			log.Fatal(err)
 		}
 
-		d.Contents = make([]string, len(files))
-		for i, file := range files {
+		d.Contents = make([]string, 0)
+		for _, file := range files {
 			if file.IsDir() {
-				d.Contents = append(file.Name()+"/"+"\n", d.Contents[i])
-				fileSB.WriteString(file.Name() + "/" + "\n")
+				d.Contents = append(d.Contents, file.Name()+"/")
 			} else {
-				fileSB.WriteString(file.Name() + "\n")
+				d.Contents = append(d.Contents, file.Name())
 			}
 		}
 		// TODO REMOVE FULL PATH
