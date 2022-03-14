@@ -1,9 +1,35 @@
-POST http://localhost:8080/foo
+POST http://localhost:8080/
 Content-Type: application/json
 
-{"name": "foo", "content":  "Hello World!"}
+{"name": "testfolder", "isDirectory": true}
+###
+
+POST http://localhost:8080/
+Content-Type: application/json
+
+{"name": "bar", "content":  "Hello World!"}
+###
+
+GET http://localhost:8080/foo
+Content-Type: application/json
+
+{"name": "bar", "content":  "Hello World!"}
+
+###
+GET http://localhost:8080/foo
+Content-Type: application/json
 
 ###
 GET http://localhost:8080/test.txt
+Accept: application/json
+###
+
+POST http://localhost:8080/
+Content-Type: application/json
+
+{"name": "foo", "isDirectory": true}
+
+###
+GET http://localhost:8080/
 Accept: application/json
 ###

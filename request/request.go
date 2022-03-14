@@ -17,8 +17,9 @@ import (
 )
 
 type Data struct {
-	Name    string
-	Content string
+	Name     string
+	Content  string
+	Contents []string
 }
 
 type Request struct {
@@ -36,13 +37,13 @@ type JsonPostData struct {
 	IsDirectory bool   `json:"isDirectory,omitempty"`
 }
 
-func Parse(raw string) *Request {
+func Parse(raw string) (*Request, error) {
 	req := Request{}
 	req.Headers = make(map[string]string, 10)
-
+	var err error
 	if raw == "" {
-		// TODO Handle No Status Line
-		panic("No status line!")
+		err = errors.New(strconv.Itoa(http.StatusBadRequest))
+		return nil, err
 	}
 
 	lines := strings.Split(raw, "\r\n")
@@ -76,15 +77,16 @@ func Parse(raw string) *Request {
 
 	// Clean Body
 	req.Body = strings.Replace(req.Body, "\x00", "", -1)
-	return &req
+	return &req, err
 }
 
 func Handle(req *Request, opts *cli.Options) (*Data, error) {
 	var err error
 	if req == nil {
-		panic("nullptr!")
+		err = errors.New(strconv.Itoa(http.StatusBadRequest))
+		return nil, err
 	}
-	validateRequest(req)
+	err = validateRequest(req)
 	var data *Data
 	switch req.Method {
 	case http.MethodGet:
@@ -97,19 +99,19 @@ func Handle(req *Request, opts *cli.Options) (*Data, error) {
 	return data, err
 }
 
-func validateRequest(req *Request) {
+func validateRequest(req *Request) error {
+	var err error
 	if req.Method == "" {
-		// TODO Handle missing method HTTP ERROR
-		panic("Method is missing")
+		err = errors.New(strconv.Itoa(http.StatusBadRequest))
+		return err
 	}
 	if req.Protocol != "HTTP" {
-		// TODO HTTP ERROR
-		panic("Protocol is unsupported")
+		err = errors.New(strconv.Itoa(http.StatusMethodNotAllowed))
 	}
 	if req.Version != "1.0" && req.Version != "1.1" {
-		// TODO Handle response
-		panic("HTTP Version is not supported.")
+		err = errors.New(strconv.Itoa(http.StatusHTTPVersionNotSupported))
 	}
+	return err
 }
 
 // {"name": "value", "content": "content value","isDirectory": false}
@@ -135,27 +137,42 @@ func write(req *Request, opts *cli.Options) (*Data, error) {
 	}
 	requestBodyBytes := []byte(jsonData.Content)
 	if jsonData.IsDirectory {
-		newPath := path + jsonData.Name
-		err := validateDirCreation(newPath, req, opts)
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			err = errors.New(strconv.Itoa(http.StatusNotFound))
+			return nil, err
+		}
+		var newPath string
+		if jsonData.Name[:len(jsonData.Name)-1] == "/" {
+			newPath = path + "/" + jsonData.Name[:len(jsonData.Name)-1]
+
+		} else {
+			newPath = path + "/" + jsonData.Name
+		}
+
+		err := validateDirCreation(newPath, opts)
 		if err != nil {
 			err = errors.New(strconv.Itoa(http.StatusUnauthorized))
 			return nil, err
 		}
-		err = os.MkdirAll(newPath, os.ModePerm)
+		split := strings.Split(newPath, path)
+		relativePath := split[len(split)-1][1:]
+		err = os.Mkdir(relativePath, 0777)
+
 		if err != nil {
-			err = errors.New(strconv.Itoa(http.StatusInternalServerError))
+			err = errors.New(strconv.Itoa(http.StatusNotFound))
 			return nil, err
 		}
-		data.Name = newPath
+
+		data.Name = req.Url + "/" + jsonData.Name + "/"
 		data.Content = ""
 	} else {
-		err = os.WriteFile(path, requestBodyBytes, 0644)
+		err = os.WriteFile(path+"/"+jsonData.Name, requestBodyBytes, 0644)
 
-		data.Name = path
+		data.Name = req.Url[:len(req.Url)-1] + "/" + jsonData.Name
 		data.Content = string(requestBodyBytes)
 
 		if err != nil {
-			err = errors.New(strconv.Itoa(http.StatusInternalServerError))
+			err = errors.New(strconv.Itoa(http.StatusNotFound))
 			return nil, err
 		}
 	}
@@ -166,26 +183,38 @@ func write(req *Request, opts *cli.Options) (*Data, error) {
 func read(req *Request, opts *cli.Options) (*Data, error) {
 	path, err := validatePath(req, opts)
 	if err != nil {
+		err = errors.New(strconv.Itoa(http.StatusForbidden))
 		return nil, err
 	}
 	fmt.Println("Opening a file " + path)
 	file, err := os.OpenFile(path, os.O_RDONLY, 0666)
 	fileInfo, err := file.Stat()
 
+	if err != nil {
+		err = errors.New(strconv.Itoa(http.StatusNotFound))
+		return nil, err
+	}
+
 	if fileInfo.IsDir() {
 		fileSB := strings.Builder{}
 		files, err := ioutil.ReadDir(path)
+		d := Data{Name: path}
+
 		if err != nil {
 			log.Fatal(err)
 		}
-		for _, file := range files {
+
+		d.Contents = make([]string, len(files))
+		for i, file := range files {
 			if file.IsDir() {
+				d.Contents = append(file.Name()+"/"+"\n", d.Contents[i])
 				fileSB.WriteString(file.Name() + "/" + "\n")
 			} else {
 				fileSB.WriteString(file.Name() + "\n")
 			}
 		}
-		d := Data{Name: path, Content: fileSB.String()}
+		// TODO REMOVE FULL PATH
+
 		return &d, err
 	}
 
@@ -205,8 +234,8 @@ func read(req *Request, opts *cli.Options) (*Data, error) {
 	}
 
 	if err := scnr.Err(); err != nil {
-		// TODO Handle Error
-		panic("cannot read file.")
+		err = errors.New(strconv.Itoa(http.StatusInternalServerError))
+		return nil, err
 	}
 	split := strings.Split(path, "/")
 	fileName := split[len(split)-1]
@@ -232,8 +261,8 @@ func validatePath(req *Request, opts *cli.Options) (string, error) {
 	return path, err
 }
 
-func validateDirCreation(dir string, req *Request, opts *cli.Options) error {
-	path := filepath.Clean(opts.Path + req.Url + dir)
+func validateDirCreation(dir string, opts *cli.Options) error {
+	path := filepath.Clean(dir)
 	dirRootTree := strings.Split(opts.Path, "/")
 	reqRootTree := strings.Split(path, "/")
 	var err error

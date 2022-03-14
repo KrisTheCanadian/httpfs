@@ -56,7 +56,7 @@ func handleConnection(conn net.Conn, opts *cli.Options) {
 			break
 		}
 
-		req := request.Parse(string(buf))
+		req, err := request.Parse(string(buf))
 		data, err := request.Handle(req, opts)
 		if err != nil {
 			httpError, _ := strconv.Atoi(err.Error())
