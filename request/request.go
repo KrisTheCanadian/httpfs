@@ -159,16 +159,16 @@ func write(req *Request, opts *cli.Options) (*Data, error) {
 		err = os.Mkdir(relativePath, 0777)
 
 		if err != nil {
-			err = errors.New(strconv.Itoa(http.StatusNotFound))
+			err = errors.New(strconv.Itoa(http.StatusBadRequest))
 			return nil, err
 		}
 
-		data.Name = req.Url + "/" + jsonData.Name + "/"
+		data.Name = req.Url[:len(req.Url)-1] + "/" + jsonData.Name + "/"
 		data.Content = ""
 	} else {
 		err = os.WriteFile(path+"/"+jsonData.Name, requestBodyBytes, 0644)
 
-		data.Name = req.Url[:len(req.Url)-1] + "/" + jsonData.Name
+		data.Name = req.Url[:len(req.Url)-1] + jsonData.Name
 		data.Content = string(requestBodyBytes)
 
 		if err != nil {

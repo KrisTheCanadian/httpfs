@@ -4,13 +4,17 @@ Content-Type: application/json
 {"name": "testfolder", "isDirectory": true}
 ###
 
+GET http://localhost:8080/
+Content-Type: application/json
+###
+
 POST http://localhost:8080/
 Content-Type: application/json
 
 {"name": "bar", "content":  "Hello World!"}
 ###
 
-GET http://localhost:8080/foo
+GET http://localhost:8080/testfolder
 Content-Type: application/json
 
 {"name": "bar", "content":  "Hello World!"}
