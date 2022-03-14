@@ -3,6 +3,7 @@ package request
 import (
 	"bufio"
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"httpfs/cli"
@@ -16,9 +17,8 @@ import (
 )
 
 type Data struct {
-	Name        string
-	Content     string
-	IsDirectory bool
+	Name    string
+	Content string
 }
 
 type Request struct {
@@ -28,6 +28,12 @@ type Request struct {
 	Version  string
 	Headers  map[string]string
 	Body     string
+}
+
+type JsonPostData struct {
+	Name        string `json:"name"`
+	Content     string `json:"content"`
+	IsDirectory bool   `json:"isDirectory,omitempty"`
 }
 
 func Parse(raw string) *Request {
@@ -68,6 +74,8 @@ func Parse(raw string) *Request {
 		req.Body = req.Body + line + "\n"
 	}
 
+	// Clean Body
+	req.Body = strings.Replace(req.Body, "\x00", "", -1)
 	return &req
 }
 
@@ -104,13 +112,55 @@ func validateRequest(req *Request) {
 	}
 }
 
-// TODO
+// {"name": "value", "content": "content value","isDirectory": false}
+// isDirectory will be false by default (allows the user to create a directory)
+// name corresponds to the file name or directory name (depending on the boolean value of isDirectory)
 func write(req *Request, opts *cli.Options) (*Data, error) {
-	_, err := validatePath(req, opts)
+	// checking if json is valid
+	var err error
+	var jsonData JsonPostData
+	var data Data
+	dec := json.NewDecoder(bytes.NewReader([]byte(req.Body)))
+	dec.DisallowUnknownFields()
+	parsedJson, _ := json.MarshalIndent(jsonData, "", "  ")
+	if err := dec.Decode(&jsonData); err != nil {
+		err = errors.New(strconv.Itoa(http.StatusBadRequest))
+		return nil, err
+	}
+	fmt.Println(parsedJson)
+
+	path, err := validatePath(req, opts)
 	if err != nil {
 		return nil, err
 	}
-	return nil, nil
+	requestBodyBytes := []byte(jsonData.Content)
+	if jsonData.IsDirectory {
+		newPath := path + jsonData.Name
+		err := validateDirCreation(newPath, req, opts)
+		if err != nil {
+			err = errors.New(strconv.Itoa(http.StatusUnauthorized))
+			return nil, err
+		}
+		err = os.MkdirAll(newPath, os.ModePerm)
+		if err != nil {
+			err = errors.New(strconv.Itoa(http.StatusInternalServerError))
+			return nil, err
+		}
+		data.Name = newPath
+		data.Content = ""
+	} else {
+		err = os.WriteFile(path, requestBodyBytes, 0644)
+
+		data.Name = path
+		data.Content = string(requestBodyBytes)
+
+		if err != nil {
+			err = errors.New(strconv.Itoa(http.StatusInternalServerError))
+			return nil, err
+		}
+	}
+
+	return &data, nil
 }
 
 func read(req *Request, opts *cli.Options) (*Data, error) {
@@ -135,7 +185,7 @@ func read(req *Request, opts *cli.Options) (*Data, error) {
 				fileSB.WriteString(file.Name() + "\n")
 			}
 		}
-		d := Data{Name: path, Content: fileSB.String(), IsDirectory: true}
+		d := Data{Name: path, Content: fileSB.String()}
 		return &d, err
 	}
 
@@ -160,7 +210,7 @@ func read(req *Request, opts *cli.Options) (*Data, error) {
 	}
 	split := strings.Split(path, "/")
 	fileName := split[len(split)-1]
-	FileData := Data{Name: fileName, Content: buffer.String(), IsDirectory: false}
+	FileData := Data{Name: fileName, Content: buffer.String()}
 	return &FileData, err
 }
 
@@ -180,4 +230,22 @@ func validatePath(req *Request, opts *cli.Options) (string, error) {
 		}
 	}
 	return path, err
+}
+
+func validateDirCreation(dir string, req *Request, opts *cli.Options) error {
+	path := filepath.Clean(opts.Path + req.Url + dir)
+	dirRootTree := strings.Split(opts.Path, "/")
+	reqRootTree := strings.Split(path, "/")
+	var err error
+	if len(reqRootTree) < len(dirRootTree) {
+		err = errors.New(strconv.Itoa(http.StatusForbidden))
+		return err
+	}
+	for i, node := range dirRootTree {
+		if node != reqRootTree[i] {
+			err = errors.New(strconv.Itoa(http.StatusForbidden))
+			return err
+		}
+	}
+	return err
 }

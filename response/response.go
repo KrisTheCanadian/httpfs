@@ -28,7 +28,7 @@ func NewResponseHeaders(req *request.Request) (*map[string]string, bool) {
 	headers := make(map[string]string, 10)
 	headers["Server"] = "httpfs"
 	headers["Connection"] = "keep-alive"
-	if req.Protocol == "HTTP" && req.Version == "1.0" {
+	if (req.Protocol == "HTTP" && req.Version == "1.0") || req.Headers["Connection"] != "keep-alive" {
 		headers["Connection"] = "close"
 		stayConnected = false
 	}
@@ -36,7 +36,7 @@ func NewResponseHeaders(req *request.Request) (*map[string]string, bool) {
 	return &headers, stayConnected
 }
 
-func SendHTTPError(status int, protocol string, version string, body string) string {
+func SendHTTPError(status int, protocol string, version string) string {
 	headers := make(map[string]string, 10)
 	headers["Server"] = "httpfs"
 	headers["Connection"] = "close"
@@ -49,7 +49,6 @@ func SendHTTPError(status int, protocol string, version string, body string) str
 		responseSB.WriteString(key + ": " + value + "\r\n")
 	}
 	responseSB.WriteString("\r\n")
-	responseSB.WriteString(body)
 	responseString := responseSB.String()
 	fmt.Println(responseString)
 	return responseString

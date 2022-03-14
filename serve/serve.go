@@ -60,14 +60,14 @@ func handleConnection(conn net.Conn, opts *cli.Options) {
 		data, err := request.Handle(req, opts)
 		if err != nil {
 			httpError, _ := strconv.Atoi(err.Error())
-			responseString := response.SendHTTPError(httpError, req.Protocol, req.Version, req.Body)
+			responseString := response.SendHTTPError(httpError, req.Protocol, req.Version)
 			_, err = conn.Write([]byte(responseString))
 			break
 		}
 		// TODO BEAUTIFY THE JSON
 		jsonData, err := json.Marshal(data)
 		if err != nil {
-			responseString := response.SendHTTPError(http.StatusInternalServerError, req.Protocol, req.Version, req.Body)
+			responseString := response.SendHTTPError(http.StatusInternalServerError, req.Protocol, req.Version)
 			_, err = conn.Write([]byte(responseString))
 			break
 		}
@@ -76,7 +76,7 @@ func handleConnection(conn net.Conn, opts *cli.Options) {
 		responseString := response.SendNewResponse(http.StatusOK, req.Protocol, req.Version, headers, string(jsonData))
 		_, err = conn.Write([]byte(responseString))
 		if err != nil {
-			responseString := response.SendHTTPError(http.StatusInternalServerError, req.Protocol, req.Version, req.Body)
+			responseString := response.SendHTTPError(http.StatusInternalServerError, req.Protocol, req.Version)
 			_, err = conn.Write([]byte(responseString))
 			break
 		}
