@@ -124,12 +124,11 @@ func write(req *Request, opts *cli.Options) (*Data, error) {
 	var data Data
 	dec := json.NewDecoder(bytes.NewReader([]byte(req.Body)))
 	dec.DisallowUnknownFields()
-	parsedJson, _ := json.MarshalIndent(jsonData, "", "  ")
+	_, _ = json.MarshalIndent(jsonData, "", "  ")
 	if err := dec.Decode(&jsonData); err != nil {
 		err = errors.New(strconv.Itoa(http.StatusBadRequest))
 		return nil, err
 	}
-	fmt.Println(parsedJson)
 
 	path, err := validatePath(req, opts)
 	if err != nil {
@@ -212,8 +211,6 @@ func read(req *Request, opts *cli.Options) (*Data, error) {
 				d.Contents = append(d.Contents, file.Name())
 			}
 		}
-		// TODO REMOVE FULL PATH
-
 		return &d, err
 	}
 
