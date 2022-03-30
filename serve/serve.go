@@ -1,6 +1,7 @@
 package serve
 
 import (
+	"bytes"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 )
 
 type encodedMessage struct {
@@ -77,18 +79,71 @@ func handlePackets(opts *cli.Options, buf []byte, addr net.UDPAddr, n int) {
 	udpConn, err := net.DialUDP("udp", nil, &addr)
 
 	// HERE WE NEED A PORT THAT IS AVAILABLE
-	raddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:0")
+	udpAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:0")
 	checkError(err)
 
-	udpListen, err := net.ListenUDP("udp", raddr)
+	udpListen, err := net.ListenUDP("udp", udpAddr)
 	checkError(err)
 
 	fmt.Println(buf[:n])
-	// CHECK FOR SYN
-	frame := buf[:n]
+	m := parseMessage(buf, err, n)
 
+	// check if SYN
+	if m.packetType != SYN {
+		// DROP THE PACKET and wait for a correct one.
+	}
+
+	// Send SYN/ACK
+	synAckMessage := createMessage(SYNACK, m.peerAddress)
+	bSynAckMessage := convertMessageToBytes(synAckMessage)
+
+	_, err = udpConn.WriteToUDP(bSynAckMessage.Bytes(), &addr)
+	checkError(err)
+	fmt.Println(m)
+	fmt.Println(udpConn)
+	fmt.Println(udpListen)
+	//handleHTTP(udpConn, opts, buf, addr)
+	// WAIT FOR MORE REQUESTS AND STUFF.
+}
+
+func convertMessageToBytes(m encodedMessage) bytes.Buffer {
+	// create the message buffer
+	var bMessage bytes.Buffer
+	bMessage.Write(m.packetType[:])
+	bMessage.Write(m.sequenceNumber[:])
+	bMessage.Write(m.peerAddress[:])
+	bMessage.Write(m.peerPort[:])
+	bMessage.Write(m.payload)
+	return bMessage
+}
+
+func createMessage(packetType uint8, host string) encodedMessage {
 	// Parse the address
+	octets := strings.Split(host, ".")
 
+	octet0, _ := strconv.Atoi(octets[0])
+	octet1, _ := strconv.Atoi(octets[1])
+	octet2, _ := strconv.Atoi(octets[2])
+	octet3, _ := strconv.Atoi(octets[3])
+
+	bAddress := [4]byte{byte(octet0), byte(octet1), byte(octet2), byte(octet3)}
+
+	fmt.Printf("%s has 4-byte representation of %bAddress\n", host, bAddress)
+
+	portBuffer := [2]byte{}
+	binary.LittleEndian.PutUint16(portBuffer[:], 8080)
+
+	sequenceNumberBuffer := [4]byte{}
+	binary.BigEndian.PutUint32(sequenceNumberBuffer[:], 0)
+
+	// Start Handshake
+	// SYN MESSAGE
+	m := encodedMessage{packetType: [1]byte{packetType}, sequenceNumber: sequenceNumberBuffer, peerAddress: bAddress, peerPort: portBuffer, payload: []byte("0")}
+	return m
+}
+
+func parseMessage(buf []byte, err error, n int) message {
+	// Parse the address
 	bAddressOctet0 := buf[5]
 	bAddressOctet1 := buf[6]
 	bAddressOctet2 := buf[7]
@@ -110,12 +165,7 @@ func handlePackets(opts *cli.Options, buf []byte, addr net.UDPAddr, n int) {
 	m.peerAddress = host
 	m.peerPort = port
 	m.payload = string(buf[11:n])
-	fmt.Println(m)
-	fmt.Println(frame)
-	fmt.Println(udpConn)
-	fmt.Println(udpListen)
-	//handleHTTP(udpConn, opts, buf, addr)
-	// WAIT FOR MORE REQUESTS AND STUFF.
+	return m
 }
 
 func checkError(err error) {
