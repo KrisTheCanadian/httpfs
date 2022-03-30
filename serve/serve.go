@@ -1,6 +1,9 @@
 package serve
 
 import (
+	"bufio"
+	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"httpfs/cli"
@@ -9,19 +12,27 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
-	"time"
 )
+
+type message struct {
+	packetType     int
+	sequenceNumber int
+	peerAddress    string
+	peerPort       int
+	payload        []byte
+}
 
 func Serve(opts *cli.Options) {
 
 	port := strconv.Itoa(opts.Port)
 	address := "127.0.0.1:" + port
-	//raddr, err := net.ResolveUDPAddr("udp", address)
-	//if err != nil {
-	//	log.Fatal(err)
-	//}
-	packetConn, err := net.ListenPacket("udp", address)
+	raddr, err := net.ResolveUDPAddr("udp", address)
+	if err != nil {
+		log.Fatal(err)
+	}
+	udpConn, err := net.ListenUDP("udp", raddr)
 	if err != nil {
 		log.Printf("failed to listen on " + port + ".")
 	}
@@ -30,61 +41,92 @@ func Serve(opts *cli.Options) {
 		if err != nil {
 			log.Print("Error closing the server.")
 		}
-	}(packetConn)
+	}(udpConn)
 
-	fmt.Println("echo server is listening on", packetConn.LocalAddr().String())
+	fmt.Println("echo server is listening on", udpConn.LocalAddr().String())
+	buf := make([]byte, 1024)
+
 	for {
-		buf := make([]byte, 1024)
-		n, addr, err := packetConn.ReadFrom(buf)
+		n, addr, err := udpConn.ReadFromUDP(buf)
 		if err != nil {
 			continue
 		}
-		go handlePackets(packetConn, opts, buf[:n], addr, n)
+		go handlePackets(opts, buf[:n], *addr, n)
 	}
-
 }
 
-func handlePackets(packetConn net.PacketConn, opts *cli.Options, buf []byte, addr net.Addr, n int) {
-	defer func(packetConn net.PacketConn) {
-		err := packetConn.Close()
-		if err != nil {
-			log.Print("Error closing the connection with the client.")
-		}
-	}(packetConn)
+func handlePackets(opts *cli.Options, buf []byte, addr net.UDPAddr, n int) {
+	log.Println("UDP client : ", addr)
+	log.Println("Received from UDP client :  ", string(buf[:n]))
 
-	for {
-		fmt.Println("UDP client : ", addr)
-		fmt.Println("Received from UDP client :  ", string(buf[:n]))
-		// we are adding a 3-second deadline for the packet to be written.
-		deadline := time.Now().Add(time.Second * 3)
-		err := packetConn.SetWriteDeadline(deadline)
+	// CREATE A NEW SOCKET
+	udpConn, err := net.DialUDP("udp", nil, &addr)
 
-		req, err := request.Parse(string(buf))
-		data, err := request.Handle(req, opts)
-		if err != nil {
-			httpError, _ := strconv.Atoi(err.Error())
-			responseString := response.SendHTTPError(httpError, req.Protocol, req.Version)
-			_, err = packetConn.WriteTo([]byte(responseString), addr)
-			break
-		}
-		// TODO BEAUTIFY THE JSON
-		jsonData, err := json.Marshal(data)
-		if err != nil {
-			responseString := response.SendHTTPError(http.StatusInternalServerError, req.Protocol, req.Version)
-			_, err = packetConn.WriteTo([]byte(responseString), addr)
-			break
-		}
+	// HERE WE NEED A PORT THAT IS AVAILABLE
+	raddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:0")
+	checkError(err)
 
-		headers, stayConnected := response.NewResponseHeaders(req)
-		responseString := response.SendNewResponse(http.StatusOK, req.Protocol, req.Version, headers, string(jsonData))
-		_, err = packetConn.WriteTo([]byte(responseString), addr)
-		if err != nil {
-			responseString := response.SendHTTPError(http.StatusInternalServerError, req.Protocol, req.Version)
-			_, err = packetConn.WriteTo([]byte(responseString), addr)
-			break
-		}
-		if !stayConnected {
-			break
-		}
+	udpListen, err := net.ListenUDP("udp", raddr)
+	checkError(err)
+
+	fmt.Println(string(buf[:n]))
+	// CHECK FOR SYN
+	frame := buf[:n]
+	readerFrame := bytes.NewReader(frame)
+	scanner := bufio.NewScanner(readerFrame)
+	scanner.Split(bufio.ScanBytes)
+
+	if !scanner.Scan() {
+		fmt.Print("No response.")
+		os.Exit(1)
+	}
+
+	m := message{}
+	for scanner.Scan() {
+		bPacketType := scanner.Bytes()
+		fmt.Printf("%v = %v = %v\n", bPacketType, bPacketType[0], string(bPacketType))
+		m.packetType = int(binary.LittleEndian.Uint64(bPacketType))
+	}
+	fmt.Println(m.packetType)
+	fmt.Println(frame)
+	fmt.Println(udpConn)
+	fmt.Println(udpListen)
+	//handleHTTP(udpConn, opts, buf, addr)
+	// WAIT FOR MORE REQUESTS AND STUFF.
+}
+
+func checkError(err error) {
+	if err != nil {
+		log.Fatal(err)
+	}
+}
+
+func handleHTTP(udpConn *net.UDPConn, opts *cli.Options, buf []byte, addr net.UDPAddr) {
+	req, err := request.Parse(string(buf))
+	data, err := request.Handle(req, opts)
+	if err != nil {
+		httpError, _ := strconv.Atoi(err.Error())
+		responseString := response.SendHTTPError(httpError, req.Protocol, req.Version)
+		_, err = udpConn.WriteToUDP([]byte(responseString), &addr)
+		return
+	}
+
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		responseString := response.SendHTTPError(http.StatusInternalServerError, req.Protocol, req.Version)
+		_, err = udpConn.WriteToUDP([]byte(responseString), &addr)
+		return
+	}
+
+	headers, stayConnected := response.NewResponseHeaders(req)
+	responseString := response.SendNewResponse(http.StatusOK, req.Protocol, req.Version, headers, string(jsonData))
+	_, err = udpConn.WriteToUDP([]byte(responseString), &addr)
+	if err != nil {
+		responseString := response.SendHTTPError(http.StatusInternalServerError, req.Protocol, req.Version)
+		_, err = udpConn.WriteToUDP([]byte(responseString), &addr)
+		return
+	}
+	if !stayConnected {
+		return
 	}
 }
