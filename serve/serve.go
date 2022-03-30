@@ -1,8 +1,6 @@
 package serve
 
 import (
-	"bufio"
-	"bytes"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -12,17 +10,33 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"os"
 	"strconv"
 )
 
-type message struct {
-	packetType     int
-	sequenceNumber int
-	peerAddress    string
-	peerPort       int
-	payload        []byte
+type encodedMessage struct {
+	packetType     [1]byte
+	sequenceNumber [4]byte
+	peerAddress    [4]byte
+	peerPort       [2]byte
+	// Size 1013
+	payload []byte
 }
+
+type message struct {
+	packetType     uint8
+	sequenceNumber uint32
+	peerAddress    string
+	peerPort       uint16
+	payload        string
+}
+
+const (
+	ACK    uint8 = 0
+	SYN    uint8 = 1
+	FIN    uint8 = 2
+	NACK   uint8 = 3
+	SYNACK uint8 = 4
+)
 
 func Serve(opts *cli.Options) {
 
@@ -69,25 +83,34 @@ func handlePackets(opts *cli.Options, buf []byte, addr net.UDPAddr, n int) {
 	udpListen, err := net.ListenUDP("udp", raddr)
 	checkError(err)
 
-	fmt.Println(string(buf[:n]))
+	fmt.Println(buf[:n])
 	// CHECK FOR SYN
 	frame := buf[:n]
-	readerFrame := bytes.NewReader(frame)
-	scanner := bufio.NewScanner(readerFrame)
-	scanner.Split(bufio.ScanBytes)
 
-	if !scanner.Scan() {
-		fmt.Print("No response.")
-		os.Exit(1)
-	}
+	// Parse the address
+
+	bAddressOctet0 := buf[5]
+	bAddressOctet1 := buf[6]
+	bAddressOctet2 := buf[7]
+	bAddressOctet3 := buf[8]
+
+	addressInt0 := strconv.Itoa(int(bAddressOctet0))
+	addressInt1 := strconv.Itoa(int(bAddressOctet1))
+	addressInt2 := strconv.Itoa(int(bAddressOctet2))
+	addressInt3 := strconv.Itoa(int(bAddressOctet3))
+
+	host := addressInt0 + "." + addressInt1 + "." + addressInt2 + "." + addressInt3
+
+	port := binary.LittleEndian.Uint16(buf[9:11])
+	checkError(err)
 
 	m := message{}
-	for scanner.Scan() {
-		bPacketType := scanner.Bytes()
-		fmt.Printf("%v = %v = %v\n", bPacketType, bPacketType[0], string(bPacketType))
-		m.packetType = int(binary.LittleEndian.Uint64(bPacketType))
-	}
-	fmt.Println(m.packetType)
+	m.packetType = buf[0]
+	m.sequenceNumber = binary.BigEndian.Uint32(buf[1:5])
+	m.peerAddress = host
+	m.peerPort = port
+	m.payload = string(buf[11:n])
+	fmt.Println(m)
 	fmt.Println(frame)
 	fmt.Println(udpConn)
 	fmt.Println(udpListen)
