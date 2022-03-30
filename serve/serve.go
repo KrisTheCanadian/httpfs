@@ -9,75 +9,78 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"os"
 	"strconv"
+	"time"
 )
 
 func Serve(opts *cli.Options) {
 
 	port := strconv.Itoa(opts.Port)
-
-	listener, err := net.Listen("tcp4", ":"+port)
+	address := "127.0.0.1:" + port
+	//raddr, err := net.ResolveUDPAddr("udp", address)
+	//if err != nil {
+	//	log.Fatal(err)
+	//}
+	packetConn, err := net.ListenPacket("udp", address)
 	if err != nil {
 		log.Printf("failed to listen on " + port + ".")
 	}
-	defer func(listener net.Listener) {
-		err := listener.Close()
+	defer func(udpConn net.PacketConn) {
+		err := udpConn.Close()
 		if err != nil {
-			log.Print("Error closing the server listener.")
+			log.Print("Error closing the server.")
 		}
-	}(listener)
+	}(packetConn)
 
-	fmt.Println("echo server is listening on", listener.Addr())
+	fmt.Println("echo server is listening on", packetConn.LocalAddr().String())
 	for {
-		conn, err := listener.Accept()
+		buf := make([]byte, 1024)
+		n, addr, err := packetConn.ReadFrom(buf)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "error occured during accept connection %v\n", err)
 			continue
 		}
-		go handleConnection(conn, opts)
+		go handlePackets(packetConn, opts, buf[:n], addr, n)
 	}
+
 }
 
-func handleConnection(conn net.Conn, opts *cli.Options) {
-	defer func(conn net.Conn) {
-		err := conn.Close()
+func handlePackets(packetConn net.PacketConn, opts *cli.Options, buf []byte, addr net.Addr, n int) {
+	defer func(packetConn net.PacketConn) {
+		err := packetConn.Close()
 		if err != nil {
 			log.Print("Error closing the connection with the client.")
 		}
-	}(conn)
-	log.Println(fmt.Printf("new connection from " + conn.RemoteAddr().String() + ". \n"))
-	//we can use io.Copy(conn, conn) but this function demonstrates read&write methods
-	buf := make([]byte, 1024)
+	}(packetConn)
+
 	for {
-		_, re := conn.Read(buf)
-		if re != nil {
-			fmt.Println("read error: ", re)
-			break
-		}
+		fmt.Println("UDP client : ", addr)
+		fmt.Println("Received from UDP client :  ", string(buf[:n]))
+		// we are adding a 3-second deadline for the packet to be written.
+		deadline := time.Now().Add(time.Second * 3)
+		err := packetConn.SetWriteDeadline(deadline)
 
 		req, err := request.Parse(string(buf))
 		data, err := request.Handle(req, opts)
 		if err != nil {
 			httpError, _ := strconv.Atoi(err.Error())
 			responseString := response.SendHTTPError(httpError, req.Protocol, req.Version)
-			_, err = conn.Write([]byte(responseString))
+			_, err = packetConn.WriteTo([]byte(responseString), addr)
 			break
 		}
 		// TODO BEAUTIFY THE JSON
 		jsonData, err := json.Marshal(data)
 		if err != nil {
 			responseString := response.SendHTTPError(http.StatusInternalServerError, req.Protocol, req.Version)
-			_, err = conn.Write([]byte(responseString))
+			_, err = packetConn.WriteTo([]byte(responseString), addr)
 			break
 		}
 
 		headers, stayConnected := response.NewResponseHeaders(req)
 		responseString := response.SendNewResponse(http.StatusOK, req.Protocol, req.Version, headers, string(jsonData))
-		_, err = conn.Write([]byte(responseString))
+		_, err = packetConn.WriteTo([]byte(responseString), addr)
 		if err != nil {
 			responseString := response.SendHTTPError(http.StatusInternalServerError, req.Protocol, req.Version)
-			_, err = conn.Write([]byte(responseString))
+			_, err = packetConn.WriteTo([]byte(responseString), addr)
 			break
 		}
 		if !stayConnected {
