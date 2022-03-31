@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type encodedMessage struct {
@@ -38,6 +39,7 @@ const (
 	FIN    uint8 = 2
 	NACK   uint8 = 3
 	SYNACK uint8 = 4
+	DATA   uint8 = 5
 )
 
 func Serve(opts *cli.Options) {
@@ -67,43 +69,131 @@ func Serve(opts *cli.Options) {
 		if err != nil {
 			continue
 		}
-		go handlePackets(opts, buf[:n], *addr, n)
+		go handlePackets(buf[:n], *addr, n)
 	}
 }
 
-func handlePackets(opts *cli.Options, buf []byte, addr net.UDPAddr, n int) {
+func handlePackets(buf []byte, addr net.UDPAddr, n int) {
+	m, udpConn, err, bSynAckMessage, badPacket := initiateHandshake(buf, addr, n)
+	if badPacket {
+		return
+	}
+
+	// TODO Handle HTTP REQUEST FRAMES
+	// TEMPORARY
+	// Simple but not super efficient -> We wait until receiving an ACK before sending new frame.
+	frames := make(map[int]message)
+	err = udpConn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	checkError(err)
+	for {
+		buf := make([]byte, 1024)
+		n, err := udpConn.Read(buf)
+		if nerr, ok := err.(net.Error); ok && nerr.Timeout() {
+			err = udpConn.SetReadDeadline(time.Now().Add(10 * time.Second))
+			// TODO ADD LOGIC TO CHECK IF THERE'S A MISSING SEQUENCE
+			// TODO NACK THE MISSING ONES
+			break
+		}
+		if err != nil {
+			if e, ok := err.(net.Error); !ok || !e.Timeout() {
+				continue
+			}
+		}
+		// CHECK FOR DATA
+		m = parseMessage(buf, n)
+		if m.packetType != DATA {
+			// ignore it and continue waiting
+			continue
+		}
+		// check to see if the frame is already there first
+		frames[int(m.sequenceNumber)] = m
+		split := strings.Split(udpConn.RemoteAddr().String(), ":")
+		ipAddress := split[0]
+
+		port, err := strconv.Atoi(split[1])
+		checkError(err)
+
+		payloadBuffer := make([]byte, 1024)
+		payloadBufferWriter := bytes.NewBuffer(payloadBuffer)
+		payloadBufferWriter.WriteString("0")
+
+		ackPacket := createMessage(ACK, int(m.sequenceNumber), ipAddress, port, payloadBufferWriter.Bytes())
+		bAckPacket := convertMessageToBytes(ackPacket)
+
+		// sending ACK
+		_, err = udpConn.Write(bAckPacket.Bytes())
+	}
+
+	checkError(err)
+	fmt.Println(bSynAckMessage)
+	fmt.Println(m)
+	fmt.Println(udpConn)
+	//handleHTTP(udpConn, opts, buf, addr)
+	// WAIT FOR MORE REQUESTS AND STUFF.
+}
+
+func initiateHandshake(buf []byte, addr net.UDPAddr, n int) (message, *net.UDPConn, error, bytes.Buffer, bool) {
 	log.Println("UDP client : ", addr)
-	log.Println("Received from UDP client :  ", string(buf[:n]))
-
-	// CREATE A NEW SOCKET
-	udpConn, err := net.DialUDP("udp", nil, &addr)
-
-	// HERE WE NEED A PORT THAT IS AVAILABLE
-	udpAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:0")
-	checkError(err)
-
-	udpListen, err := net.ListenUDP("udp", udpAddr)
-	checkError(err)
+	log.Println("Received from UDP client :  ", buf[:n])
 
 	fmt.Println(buf[:n])
-	m := parseMessage(buf, err, n)
+	m := parseMessage(buf, n)
 
 	// check if SYN
 	if m.packetType != SYN {
 		// DROP THE PACKET and wait for a correct one.
+		return message{}, nil, nil, bytes.Buffer{}, true
 	}
 
+	// CREATE A NEW SOCKET
+	udpConn, err := net.DialUDP("udp", nil, &addr)
+
+	fmt.Println("Created Socket to Handle: " + udpConn.LocalAddr().String())
+	fmt.Println("Handling Client connection from " + udpConn.RemoteAddr().String())
+
 	// Send SYN/ACK
-	synAckMessage := createMessage(SYNACK, m.peerAddress)
+	payloadBuffer := make([]byte, 1024)
+	payloadBufferWriter := bytes.NewBuffer(payloadBuffer)
+	payloadBufferWriter.WriteString("0")
+
+	synAckMessage := createMessage(SYNACK, 2, addr.IP.String(), addr.Port, payloadBufferWriter.Bytes())
 	bSynAckMessage := convertMessageToBytes(synAckMessage)
 
-	_, err = udpConn.WriteToUDP(bSynAckMessage.Bytes(), &addr)
+	fmt.Println("Sending Client a " + addr.IP.String() + ":" + strconv.Itoa(addr.Port) + " a SYN/ACK Packet")
+
+	// start timer and read the message
+	_, err = udpConn.Write(bSynAckMessage.Bytes())
+	err = udpConn.SetReadDeadline(time.Now().Add(10 * time.Second))
 	checkError(err)
-	fmt.Println(m)
-	fmt.Println(udpConn)
-	fmt.Println(udpListen)
-	//handleHTTP(udpConn, opts, buf, addr)
-	// WAIT FOR MORE REQUESTS AND STUFF.
+	for {
+		buf := make([]byte, 1024)
+		n, err := udpConn.Read(buf)
+		if nerr, ok := err.(net.Error); ok && nerr.Timeout() {
+			// resend the SYN ACK Request
+			_, err = udpConn.Write(bSynAckMessage.Bytes())
+			fmt.Println("Attempting to resend SYN/ACK to " + addr.IP.String() + ":" + strconv.Itoa(addr.Port))
+			err = udpConn.SetReadDeadline(time.Now().Add(5 * time.Second))
+			continue
+		}
+		if err != nil {
+			if e, ok := err.(net.Error); !ok || !e.Timeout() {
+				continue
+			}
+		}
+		fmt.Println(buf[:n])
+		fmt.Println("Received a packet as a response! from " + addr.String())
+
+		// CHECK FOR ACK
+		m := parseMessage(buf, n)
+		if m.packetType != ACK {
+			// ignore it and continue waiting
+			continue
+		} else {
+			fmt.Println("Handshake Completed.")
+			break
+		}
+	}
+	return m, udpConn, err, bSynAckMessage, false
 }
 
 func convertMessageToBytes(m encodedMessage) bytes.Buffer {
@@ -117,7 +207,7 @@ func convertMessageToBytes(m encodedMessage) bytes.Buffer {
 	return bMessage
 }
 
-func createMessage(packetType uint8, host string) encodedMessage {
+func createMessage(packetType uint8, sequenceNumber int, host string, port int, payload []byte) encodedMessage {
 	// Parse the address
 	octets := strings.Split(host, ".")
 
@@ -128,21 +218,19 @@ func createMessage(packetType uint8, host string) encodedMessage {
 
 	bAddress := [4]byte{byte(octet0), byte(octet1), byte(octet2), byte(octet3)}
 
-	fmt.Printf("%s has 4-byte representation of %bAddress\n", host, bAddress)
-
 	portBuffer := [2]byte{}
-	binary.LittleEndian.PutUint16(portBuffer[:], 8080)
+	binary.LittleEndian.PutUint16(portBuffer[:], uint16(port))
 
 	sequenceNumberBuffer := [4]byte{}
-	binary.BigEndian.PutUint32(sequenceNumberBuffer[:], 0)
+	binary.BigEndian.PutUint32(sequenceNumberBuffer[:], uint32(sequenceNumber))
 
 	// Start Handshake
 	// SYN MESSAGE
-	m := encodedMessage{packetType: [1]byte{packetType}, sequenceNumber: sequenceNumberBuffer, peerAddress: bAddress, peerPort: portBuffer, payload: []byte("0")}
+	m := encodedMessage{packetType: [1]byte{packetType}, sequenceNumber: sequenceNumberBuffer, peerAddress: bAddress, peerPort: portBuffer, payload: payload}
 	return m
 }
 
-func parseMessage(buf []byte, err error, n int) message {
+func parseMessage(buf []byte, n int) message {
 	// Parse the address
 	bAddressOctet0 := buf[5]
 	bAddressOctet1 := buf[6]
@@ -157,7 +245,6 @@ func parseMessage(buf []byte, err error, n int) message {
 	host := addressInt0 + "." + addressInt1 + "." + addressInt2 + "." + addressInt3
 
 	port := binary.LittleEndian.Uint16(buf[9:11])
-	checkError(err)
 
 	m := message{}
 	m.packetType = buf[0]
