@@ -11,6 +11,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -69,22 +70,140 @@ func Serve(opts *cli.Options) {
 		if err != nil {
 			continue
 		}
-		go handlePackets(buf[:n], *addr, n)
+		go handlePackets(opts, buf[:n], *addr, n)
 	}
 }
 
-func handlePackets(buf []byte, addr net.UDPAddr, n int) {
-	m, udpConn, err, bSynAckMessage, badPacket := initiateHandshake(buf, addr, n)
+func handlePackets(opts *cli.Options, buf []byte, addr net.UDPAddr, n int) {
+	udpConn, err, _, badPacket := initiateHandshake(buf, addr, n)
 	if badPacket {
 		return
 	}
 
+	reqFrames := handleRequestFrames(udpConn)
+	sbPayload := parseFrames(reqFrames)
+	res := handleHTTP(opts, sbPayload.String())
+
+	fmt.Println("Response Reconstructed as: " + sbPayload.String())
+
+	sendResponse(res, udpConn, err)
+
+}
+
+func sendResponse(res string, udpConn *net.UDPConn, err error) {
+	bRes := []byte(res)
+
+	resFrames := make(map[int]encodedMessage)
+	ackedFrames := make(map[int]bool)
+
+	chunkDataIntoFrames(bRes, udpConn, resFrames, ackedFrames)
+
+	sendFrames(resFrames, udpConn, ackedFrames)
+
+	// START WAITING FOR THOSE ACK FRAMES
+	err = udpConn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	checkError(err)
+	for {
+		buf := make([]byte, 1024)
+		n, addr, err := udpConn.ReadFromUDP(buf)
+		if nerr, ok := err.(net.Error); ok && nerr.Timeout() {
+			isAllAcked := true
+			// CHECK ACKED Frames
+			for frameNumber, isAcked := range ackedFrames {
+				isAllAcked = isAllAcked && isAcked
+				if !isAcked {
+					frameMessage := resFrames[frameNumber]
+					bMessage := convertMessageToBytes(frameMessage)
+					_, err = udpConn.Write(bMessage.Bytes())
+					checkError(err)
+				}
+			}
+			if isAllAcked {
+				// ALL PACKETS HAVE BEEN ACKED.
+				break
+			}
+			// RESET TIMER
+			err = udpConn.SetReadDeadline(time.Now().Add(10 * time.Second))
+			continue
+		}
+		if err != nil {
+			if e, ok := err.(net.Error); !ok || !e.Timeout() {
+				continue
+			}
+		}
+		fmt.Println("Received a packet as a response! from " + addr.String())
+
+		// CHECK FOR ACK
+		m := parseMessage(buf, n)
+		if m.packetType != ACK {
+			// ignore it and continue waiting
+			continue
+		}
+		// CHECK IF SEQUENCE MATCHES A PACKET SENT
+		frameNumber := int(m.sequenceNumber)
+		if _, ok := ackedFrames[frameNumber]; ok {
+			fmt.Println("Ack packet received for frame:" + strconv.Itoa(frameNumber))
+			ackedFrames[frameNumber] = true
+		}
+		err = udpConn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	}
+}
+
+func sendFrames(resFrames map[int]encodedMessage, udpConn *net.UDPConn, ackedFrames map[int]bool) {
+	// SEND THE MESSAGE FRAMES
+	for number, frameMessage := range resFrames {
+		// encode that frame
+		bMessage := convertMessageToBytes(frameMessage)
+		// send it to the client
+		_, err := udpConn.Write(bMessage.Bytes())
+		checkError(err)
+		ackedFrames[number] = false
+	}
+}
+
+func chunkDataIntoFrames(bRes []byte, udpConn *net.UDPConn, resFrames map[int]encodedMessage, ackedFrames map[int]bool) {
+	chunks := split(bRes, 1013)
+	frameNumber := 60
+
+	// SPLIT PAYLOAD INTO FRAMES
+	for _, chunk := range chunks {
+		ipAddress, port := connectionGetPortAndIP(udpConn)
+		m := createMessage(DATA, frameNumber, ipAddress, port, chunk)
+		resFrames[frameNumber] = m
+		ackedFrames[frameNumber] = false
+		frameNumber++
+	}
+}
+
+func parseFrames(frames map[int]message) strings.Builder {
+	// We now have all the frames
+	// Let us get theses messages and reconstruct the payload
+	frameNumbers := make([]int, len(frames))
+	i := 0
+	for number, _ := range frames {
+		frameNumbers[i] = number
+		i++
+	}
+	sort.Ints(frameNumbers)
+
+	// Reconstruct the payload
+	sbPayload := strings.Builder{}
+	for _, Number := range frameNumbers {
+		sbPayload.WriteString(frames[Number].payload)
+	}
+
+	print("Payload Completely Received: \n" + sbPayload.String())
+	return sbPayload
+}
+
+func handleRequestFrames(udpConn *net.UDPConn) map[int]message {
 	// TODO Handle HTTP REQUEST FRAMES
 	// TEMPORARY
 	// Simple but not super efficient -> We wait until receiving an ACK before sending new frame.
 	frames := make(map[int]message)
-	err = udpConn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	err := udpConn.SetReadDeadline(time.Now().Add(10 * time.Second))
 	checkError(err)
+	firstTimeReceived := false
 	for {
 		buf := make([]byte, 1024)
 		n, err := udpConn.Read(buf)
@@ -92,7 +211,13 @@ func handlePackets(buf []byte, addr net.UDPAddr, n int) {
 			err = udpConn.SetReadDeadline(time.Now().Add(10 * time.Second))
 			// TODO ADD LOGIC TO CHECK IF THERE'S A MISSING SEQUENCE
 			// TODO NACK THE MISSING ONES
-			break
+
+			// if you received packets then timed out then break
+			if firstTimeReceived {
+				break
+			}
+			// just keep waiting for client to send stuff
+			continue
 		}
 		if err != nil {
 			if e, ok := err.(net.Error); !ok || !e.Timeout() {
@@ -100,39 +225,59 @@ func handlePackets(buf []byte, addr net.UDPAddr, n int) {
 			}
 		}
 		// CHECK FOR DATA
-		m = parseMessage(buf, n)
+		m := parseMessage(buf, n)
 		if m.packetType != DATA {
 			// ignore it and continue waiting
 			continue
 		}
+		// set first time received to true
+		firstTimeReceived = true
+
 		// check to see if the frame is already there first
 		frames[int(m.sequenceNumber)] = m
-		split := strings.Split(udpConn.RemoteAddr().String(), ":")
-		ipAddress := split[0]
+		ipAddress, port := connectionGetPortAndIP(udpConn)
 
-		port, err := strconv.Atoi(split[1])
-		checkError(err)
-
-		payloadBuffer := make([]byte, 1024)
+		payloadBuffer := make([]byte, 1013)
 		payloadBufferWriter := bytes.NewBuffer(payloadBuffer)
 		payloadBufferWriter.WriteString("0")
 
 		ackPacket := createMessage(ACK, int(m.sequenceNumber), ipAddress, port, payloadBufferWriter.Bytes())
 		bAckPacket := convertMessageToBytes(ackPacket)
 
+		fmt.Println("Data packet received frame #:" + strconv.Itoa(int(m.sequenceNumber)))
+		fmt.Println("Payload Data: " + m.payload)
+
 		// sending ACK
 		_, err = udpConn.Write(bAckPacket.Bytes())
+		fmt.Println("Ack packet sent for frame #:" + strconv.Itoa(int(m.sequenceNumber)))
+		err = udpConn.SetReadDeadline(time.Now().Add(10 * time.Second))
 	}
-
-	checkError(err)
-	fmt.Println(bSynAckMessage)
-	fmt.Println(m)
-	fmt.Println(udpConn)
-	//handleHTTP(udpConn, opts, buf, addr)
-	// WAIT FOR MORE REQUESTS AND STUFF.
+	return frames
 }
 
-func initiateHandshake(buf []byte, addr net.UDPAddr, n int) (message, *net.UDPConn, error, bytes.Buffer, bool) {
+func connectionGetPortAndIP(udpConn *net.UDPConn) (string, int) {
+	split := strings.Split(udpConn.RemoteAddr().String(), ":")
+	ipAddress := split[0]
+
+	port, err := strconv.Atoi(split[1])
+	checkError(err)
+	return ipAddress, port
+}
+
+func split(buf []byte, lim int) [][]byte {
+	var chunk []byte
+	chunks := make([][]byte, 0, len(buf)/lim+1)
+	for len(buf) >= lim {
+		chunk, buf = buf[:lim], buf[lim:]
+		chunks = append(chunks, chunk)
+	}
+	if len(buf) > 0 {
+		chunks = append(chunks, buf[:len(buf)])
+	}
+	return chunks
+}
+
+func initiateHandshake(buf []byte, addr net.UDPAddr, n int) (*net.UDPConn, error, bytes.Buffer, bool) {
 	log.Println("UDP client : ", addr)
 	log.Println("Received from UDP client :  ", buf[:n])
 
@@ -142,7 +287,7 @@ func initiateHandshake(buf []byte, addr net.UDPAddr, n int) (message, *net.UDPCo
 	// check if SYN
 	if m.packetType != SYN {
 		// DROP THE PACKET and wait for a correct one.
-		return message{}, nil, nil, bytes.Buffer{}, true
+		return nil, nil, bytes.Buffer{}, true
 	}
 
 	// CREATE A NEW SOCKET
@@ -180,7 +325,6 @@ func initiateHandshake(buf []byte, addr net.UDPAddr, n int) (message, *net.UDPCo
 				continue
 			}
 		}
-		fmt.Println(buf[:n])
 		fmt.Println("Received a packet as a response! from " + addr.String())
 
 		// CHECK FOR ACK
@@ -193,7 +337,7 @@ func initiateHandshake(buf []byte, addr net.UDPAddr, n int) (message, *net.UDPCo
 			break
 		}
 	}
-	return m, udpConn, err, bSynAckMessage, false
+	return udpConn, err, bSynAckMessage, false
 }
 
 func convertMessageToBytes(m encodedMessage) bytes.Buffer {
@@ -261,32 +405,19 @@ func checkError(err error) {
 	}
 }
 
-func handleHTTP(udpConn *net.UDPConn, opts *cli.Options, buf []byte, addr net.UDPAddr) {
-	req, err := request.Parse(string(buf))
+func handleHTTP(opts *cli.Options, payload string) (responseString string) {
+	req, err := request.Parse(payload)
 	data, err := request.Handle(req, opts)
 	if err != nil {
 		httpError, _ := strconv.Atoi(err.Error())
-		responseString := response.SendHTTPError(httpError, req.Protocol, req.Version)
-		_, err = udpConn.WriteToUDP([]byte(responseString), &addr)
-		return
+		return response.SendHTTPError(httpError, req.Protocol, req.Version)
 	}
 
 	jsonData, err := json.Marshal(data)
 	if err != nil {
-		responseString := response.SendHTTPError(http.StatusInternalServerError, req.Protocol, req.Version)
-		_, err = udpConn.WriteToUDP([]byte(responseString), &addr)
-		return
+		return response.SendHTTPError(http.StatusInternalServerError, req.Protocol, req.Version)
 	}
 
-	headers, stayConnected := response.NewResponseHeaders(req)
-	responseString := response.SendNewResponse(http.StatusOK, req.Protocol, req.Version, headers, string(jsonData))
-	_, err = udpConn.WriteToUDP([]byte(responseString), &addr)
-	if err != nil {
-		responseString := response.SendHTTPError(http.StatusInternalServerError, req.Protocol, req.Version)
-		_, err = udpConn.WriteToUDP([]byte(responseString), &addr)
-		return
-	}
-	if !stayConnected {
-		return
-	}
+	headers, _ := response.NewResponseHeaders(req)
+	return response.SendNewResponse(http.StatusOK, req.Protocol, req.Version, headers, string(jsonData))
 }
