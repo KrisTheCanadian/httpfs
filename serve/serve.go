@@ -75,33 +75,32 @@ func Serve(opts *cli.Options) {
 }
 
 func handlePackets(opts *cli.Options, buf []byte, addr net.UDPAddr, n int) {
-	udpConn, err, _, badPacket := initiateHandshake(buf, addr, n)
+	udpConn, err, _, badPacket, port := initiateHandshake(buf, addr, n)
 	if badPacket {
 		return
 	}
 
-	reqFrames := handleRequestFrames(udpConn)
+	reqFrames := handleRequestFrames(udpConn, port)
 	sbPayload := parseFrames(reqFrames)
 	res := handleHTTP(opts, sbPayload.String())
 
-	fmt.Println("Response Reconstructed as: " + sbPayload.String())
-
-	sendResponse(res, udpConn, err)
-
+	sendResponse(res, udpConn, err, port)
+	fmt.Println("Completed!")
 }
 
-func sendResponse(res string, udpConn *net.UDPConn, err error) {
+func sendResponse(res string, udpConn *net.UDPConn, err error, port string) {
 	bRes := []byte(res)
 
 	resFrames := make(map[int]encodedMessage)
 	ackedFrames := make(map[int]bool)
 
-	chunkDataIntoFrames(bRes, udpConn, resFrames, ackedFrames)
+	chunkDataIntoFrames(bRes, udpConn, resFrames, ackedFrames, port)
 
 	sendFrames(resFrames, udpConn, ackedFrames)
 
 	// START WAITING FOR THOSE ACK FRAMES
-	err = udpConn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	count := 10
+	err = udpConn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	checkError(err)
 	for {
 		buf := make([]byte, 1024)
@@ -112,6 +111,7 @@ func sendResponse(res string, udpConn *net.UDPConn, err error) {
 			for frameNumber, isAcked := range ackedFrames {
 				isAllAcked = isAllAcked && isAcked
 				if !isAcked {
+					fmt.Println("Sending Packet: " + strconv.Itoa(frameNumber))
 					frameMessage := resFrames[frameNumber]
 					bMessage := convertMessageToBytes(frameMessage)
 					_, err = udpConn.Write(bMessage.Bytes())
@@ -123,7 +123,11 @@ func sendResponse(res string, udpConn *net.UDPConn, err error) {
 				break
 			}
 			// RESET TIMER
-			err = udpConn.SetReadDeadline(time.Now().Add(10 * time.Second))
+			err = udpConn.SetReadDeadline(time.Now().Add(5 * time.Second))
+			count--
+			if count < 0 {
+				break
+			}
 			continue
 		}
 		if err != nil {
@@ -142,10 +146,14 @@ func sendResponse(res string, udpConn *net.UDPConn, err error) {
 		// CHECK IF SEQUENCE MATCHES A PACKET SENT
 		frameNumber := int(m.sequenceNumber)
 		if _, ok := ackedFrames[frameNumber]; ok {
+			if ackedFrames[frameNumber] {
+				// We already received this
+				continue
+			}
 			fmt.Println("Ack packet received for frame:" + strconv.Itoa(frameNumber))
 			ackedFrames[frameNumber] = true
+			err = udpConn.SetReadDeadline(time.Now().Add(6 * time.Second))
 		}
-		err = udpConn.SetReadDeadline(time.Now().Add(10 * time.Second))
 	}
 }
 
@@ -161,14 +169,15 @@ func sendFrames(resFrames map[int]encodedMessage, udpConn *net.UDPConn, ackedFra
 	}
 }
 
-func chunkDataIntoFrames(bRes []byte, udpConn *net.UDPConn, resFrames map[int]encodedMessage, ackedFrames map[int]bool) {
+func chunkDataIntoFrames(bRes []byte, udpConn *net.UDPConn, resFrames map[int]encodedMessage, ackedFrames map[int]bool, port string) {
 	chunks := split(bRes, 1013)
 	frameNumber := 60
 
 	// SPLIT PAYLOAD INTO FRAMES
 	for _, chunk := range chunks {
-		ipAddress, port := connectionGetPortAndIP(udpConn)
-		m := createMessage(DATA, frameNumber, ipAddress, port, chunk)
+		ipAddress, _ := connectionGetPortAndIP(udpConn)
+		intPort, _ := strconv.Atoi(port)
+		m := createMessage(DATA, frameNumber, ipAddress, intPort, chunk)
 		resFrames[frameNumber] = m
 		ackedFrames[frameNumber] = false
 		frameNumber++
@@ -196,21 +205,16 @@ func parseFrames(frames map[int]message) strings.Builder {
 	return sbPayload
 }
 
-func handleRequestFrames(udpConn *net.UDPConn) map[int]message {
-	// TODO Handle HTTP REQUEST FRAMES
-	// TEMPORARY
-	// Simple but not super efficient -> We wait until receiving an ACK before sending new frame.
+func handleRequestFrames(udpConn *net.UDPConn, port string) map[int]message {
 	frames := make(map[int]message)
-	err := udpConn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	err := udpConn.SetReadDeadline(time.Now().Add(6 * time.Second))
 	checkError(err)
 	firstTimeReceived := false
 	for {
 		buf := make([]byte, 1024)
 		n, err := udpConn.Read(buf)
 		if nerr, ok := err.(net.Error); ok && nerr.Timeout() {
-			err = udpConn.SetReadDeadline(time.Now().Add(10 * time.Second))
-			// TODO ADD LOGIC TO CHECK IF THERE'S A MISSING SEQUENCE
-			// TODO NACK THE MISSING ONES
+			err = udpConn.SetReadDeadline(time.Now().Add(6 * time.Second))
 
 			// if you received packets then timed out then break
 			if firstTimeReceived {
@@ -235,22 +239,21 @@ func handleRequestFrames(udpConn *net.UDPConn) map[int]message {
 
 		// check to see if the frame is already there first
 		frames[int(m.sequenceNumber)] = m
-		ipAddress, port := connectionGetPortAndIP(udpConn)
+		ipAddress, _ := connectionGetPortAndIP(udpConn)
 
-		payloadBuffer := make([]byte, 1013)
+		payloadBuffer := make([]byte, 50)
 		payloadBufferWriter := bytes.NewBuffer(payloadBuffer)
 		payloadBufferWriter.WriteString("0")
-
-		ackPacket := createMessage(ACK, int(m.sequenceNumber), ipAddress, port, payloadBufferWriter.Bytes())
+		intPort, _ := strconv.Atoi(port)
+		ackPacket := createMessage(ACK, int(m.sequenceNumber), ipAddress, intPort, payloadBufferWriter.Bytes())
 		bAckPacket := convertMessageToBytes(ackPacket)
 
 		fmt.Println("Data packet received frame #:" + strconv.Itoa(int(m.sequenceNumber)))
-		fmt.Println("Payload Data: " + m.payload)
 
 		// sending ACK
 		_, err = udpConn.Write(bAckPacket.Bytes())
 		fmt.Println("Ack packet sent for frame #:" + strconv.Itoa(int(m.sequenceNumber)))
-		err = udpConn.SetReadDeadline(time.Now().Add(10 * time.Second))
+		err = udpConn.SetReadDeadline(time.Now().Add(6 * time.Second))
 	}
 	return frames
 }
@@ -277,17 +280,18 @@ func split(buf []byte, lim int) [][]byte {
 	return chunks
 }
 
-func initiateHandshake(buf []byte, addr net.UDPAddr, n int) (*net.UDPConn, error, bytes.Buffer, bool) {
+func initiateHandshake(buf []byte, addr net.UDPAddr, n int) (*net.UDPConn, error, bytes.Buffer, bool, string) {
 	log.Println("UDP client : ", addr)
-	log.Println("Received from UDP client :  ", buf[:n])
 
 	fmt.Println(buf[:n])
 	m := parseMessage(buf, n)
 
+	port := m.peerPort
+
 	// check if SYN
 	if m.packetType != SYN {
 		// DROP THE PACKET and wait for a correct one.
-		return nil, nil, bytes.Buffer{}, true
+		return nil, nil, bytes.Buffer{}, true, ""
 	}
 
 	// CREATE A NEW SOCKET
@@ -297,19 +301,20 @@ func initiateHandshake(buf []byte, addr net.UDPAddr, n int) (*net.UDPConn, error
 	fmt.Println("Handling Client connection from " + udpConn.RemoteAddr().String())
 
 	// Send SYN/ACK
-	payloadBuffer := make([]byte, 1024)
+	payloadBuffer := make([]byte, 50)
 	payloadBufferWriter := bytes.NewBuffer(payloadBuffer)
 	payloadBufferWriter.WriteString("0")
 
-	synAckMessage := createMessage(SYNACK, 2, addr.IP.String(), addr.Port, payloadBufferWriter.Bytes())
+	synAckMessage := createMessage(SYNACK, 2, m.peerAddress, int(m.peerPort), payloadBufferWriter.Bytes())
 	bSynAckMessage := convertMessageToBytes(synAckMessage)
 
 	fmt.Println("Sending Client a " + addr.IP.String() + ":" + strconv.Itoa(addr.Port) + " a SYN/ACK Packet")
 
 	// start timer and read the message
 	_, err = udpConn.Write(bSynAckMessage.Bytes())
-	err = udpConn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	err = udpConn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	checkError(err)
+	count := 5
 	for {
 		buf := make([]byte, 1024)
 		n, err := udpConn.Read(buf)
@@ -317,7 +322,11 @@ func initiateHandshake(buf []byte, addr net.UDPAddr, n int) (*net.UDPConn, error
 			// resend the SYN ACK Request
 			_, err = udpConn.Write(bSynAckMessage.Bytes())
 			fmt.Println("Attempting to resend SYN/ACK to " + addr.IP.String() + ":" + strconv.Itoa(addr.Port))
+			count--
 			err = udpConn.SetReadDeadline(time.Now().Add(5 * time.Second))
+			if count < 0 {
+				return nil, nil, bytes.Buffer{}, true, ""
+			}
 			continue
 		}
 		if err != nil {
@@ -337,7 +346,7 @@ func initiateHandshake(buf []byte, addr net.UDPAddr, n int) (*net.UDPConn, error
 			break
 		}
 	}
-	return udpConn, err, bSynAckMessage, false
+	return udpConn, err, bSynAckMessage, false, strconv.Itoa(int(port))
 }
 
 func convertMessageToBytes(m encodedMessage) bytes.Buffer {
@@ -363,13 +372,11 @@ func createMessage(packetType uint8, sequenceNumber int, host string, port int, 
 	bAddress := [4]byte{byte(octet0), byte(octet1), byte(octet2), byte(octet3)}
 
 	portBuffer := [2]byte{}
-	binary.LittleEndian.PutUint16(portBuffer[:], uint16(port))
+	binary.BigEndian.PutUint16(portBuffer[:], uint16(port))
 
 	sequenceNumberBuffer := [4]byte{}
 	binary.BigEndian.PutUint32(sequenceNumberBuffer[:], uint32(sequenceNumber))
 
-	// Start Handshake
-	// SYN MESSAGE
 	m := encodedMessage{packetType: [1]byte{packetType}, sequenceNumber: sequenceNumberBuffer, peerAddress: bAddress, peerPort: portBuffer, payload: payload}
 	return m
 }
@@ -388,7 +395,7 @@ func parseMessage(buf []byte, n int) message {
 
 	host := addressInt0 + "." + addressInt1 + "." + addressInt2 + "." + addressInt3
 
-	port := binary.LittleEndian.Uint16(buf[9:11])
+	port := binary.BigEndian.Uint16(buf[9:11])
 
 	m := message{}
 	m.packetType = buf[0]
