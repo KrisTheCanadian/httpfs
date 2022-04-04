@@ -135,25 +135,25 @@ func sendResponse(res string, udpConn *net.UDPConn, err error, port string) {
 				continue
 			}
 		}
-		fmt.Println("Received a packet as a response! from " + addr.String())
 
 		// CHECK FOR ACK
 		m := parseMessage(buf, n)
+
+		fmt.Println("Received a " + strconv.Itoa(int(m.packetType)) + " packet as a response! from " + addr.String())
+
 		if m.packetType != ACK {
 			// ignore it and continue waiting
 			continue
 		}
 		// CHECK IF SEQUENCE MATCHES A PACKET SENT
 		frameNumber := int(m.sequenceNumber)
-		if _, ok := ackedFrames[frameNumber]; ok {
-			if ackedFrames[frameNumber] {
-				// We already received this
-				continue
-			}
-			fmt.Println("Ack packet received for frame:" + strconv.Itoa(frameNumber))
-			ackedFrames[frameNumber] = true
-			err = udpConn.SetReadDeadline(time.Now().Add(6 * time.Second))
+		if ackedFrames[frameNumber] {
+			// We already received this
+			continue
 		}
+		fmt.Println("Ack packet received for frame:" + strconv.Itoa(frameNumber))
+		ackedFrames[frameNumber] = true
+		err = udpConn.SetReadDeadline(time.Now().Add(6 * time.Second))
 	}
 }
 
@@ -201,7 +201,7 @@ func parseFrames(frames map[int]message) strings.Builder {
 		sbPayload.WriteString(frames[Number].payload)
 	}
 
-	print("Payload Completely Received: \n" + sbPayload.String())
+	fmt.Println("Payload Completely Received: \n" + sbPayload.String())
 	return sbPayload
 }
 
@@ -334,13 +334,18 @@ func initiateHandshake(buf []byte, addr net.UDPAddr, n int) (*net.UDPConn, error
 				continue
 			}
 		}
-		fmt.Println("Received a packet as a response! from " + addr.String())
 
 		// CHECK FOR ACK
 		m := parseMessage(buf, n)
+
+		fmt.Println("Received a " + strconv.Itoa(int(m.packetType)) + " packet as a response! from " + addr.String())
 		if m.packetType != ACK {
 			// ignore it and continue waiting
 			continue
+		} else if m.packetType == DATA {
+			// We must have missed the last ACK, change state
+			fmt.Println("Handshake Completed.")
+			break
 		} else {
 			fmt.Println("Handshake Completed.")
 			break
