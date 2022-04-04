@@ -3,6 +3,7 @@ package response
 import (
 	"fmt"
 	"httpfs/request"
+	"log"
 	"net/http"
 	"strings"
 )
@@ -19,7 +20,7 @@ func SendNewResponse(status int, protocol string, version string, headers *map[s
 	responseSB.WriteString("\r\n")
 	responseSB.WriteString(body)
 	responseString := responseSB.String()
-	fmt.Println(responseString)
+	log.Println(responseString)
 	return responseString
 }
 
@@ -50,6 +51,6 @@ func SendHTTPError(status int, protocol string, version string) string {
 	}
 	responseSB.WriteString("\r\n")
 	responseString := responseSB.String()
-	fmt.Println(responseString)
+	log.Println(responseString)
 	return responseString
 }

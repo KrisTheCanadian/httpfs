@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"httpfs/cli"
 	"io/ioutil"
 	"log"
@@ -49,9 +48,20 @@ func Parse(raw string) (*Request, error) {
 	lines := strings.Split(raw, "\r\n")
 	split := strings.Split(lines[0], " ")
 
+	if len(split) < 2 {
+		err = errors.New(strconv.Itoa(http.StatusBadRequest))
+		return nil, err
+	}
+
 	req.Method = split[0]
 	req.Url = split[1]
 	split2 := strings.Split(split[2], "/")
+
+	if len(split2) < 2 {
+		err = errors.New(strconv.Itoa(http.StatusBadRequest))
+		return nil, err
+	}
+
 	req.Protocol = split2[0]
 	req.Version = strings.Replace(split2[1], "\x00", "", -1)
 
@@ -185,7 +195,7 @@ func read(req *Request, opts *cli.Options) (*Data, error) {
 		err = errors.New(strconv.Itoa(http.StatusForbidden))
 		return nil, err
 	}
-	fmt.Println("Opening a file " + path)
+	log.Println("Opening a file " + path)
 	file, err := os.OpenFile(path, os.O_RDONLY, 0666)
 	fileInfo, err := file.Stat()
 
