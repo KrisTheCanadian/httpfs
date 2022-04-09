@@ -5,6 +5,7 @@ import (
 	"httpfs/request"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 )
 
@@ -24,11 +25,12 @@ func SendNewResponse(status int, protocol string, version string, headers *map[s
 	return responseString
 }
 
-func NewResponseHeaders(req *request.Request) (*map[string]string, bool) {
+func NewResponseHeaders(req *request.Request, jsonData []byte) (*map[string]string, bool) {
 	stayConnected := true
 	headers := make(map[string]string, 10)
+	length := strconv.Itoa(len(jsonData))
 	headers["Server"] = "httpfs"
-	headers["Connection"] = "keep-alive"
+	headers["Content-Length"] = length
 	if (req.Protocol == "HTTP" && req.Version == "1.0") || req.Headers["Connection"] != "keep-alive" {
 		headers["Connection"] = "close"
 		stayConnected = false
